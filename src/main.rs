@@ -23,6 +23,12 @@ use app::App;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("termchat {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     // Set up a panic hook that restores the terminal before printing the panic
     let default_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {

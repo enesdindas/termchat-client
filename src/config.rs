@@ -8,7 +8,7 @@ pub struct Config {
 impl Config {
     pub fn load() -> Self {
         let server_url = std::env::var("TERMCHAT_SERVER")
-            .unwrap_or_else(|_| "http://localhost:8080".to_string());
+            .unwrap_or_else(|_| "https://termchat-server-09qq.onrender.com".to_string());
 
         let token_path = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))

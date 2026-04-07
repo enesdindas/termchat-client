@@ -1,0 +1,186 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            artifact: termchat-macos-arm64
+            use_cross: false
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            artifact: termchat-macos-x86_64
+            use_cross: false
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            artifact: termchat-linux-x86_64
+            use_cross: false
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-latest
+            artifact: termchat-linux-arm64
+            use_cross: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl-tools (Linux x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get install -y musl-tools
+
+      - name: Install cross (Linux arm64)
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build (cross)
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Build (cargo)
+        if: '!matrix.use_cross'
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary
+        run: |
+          cp target/${{ matrix.target }}/release/termchat termchat
+          tar -czf ${{ matrix.artifact }}.tar.gz termchat
+          rm termchat
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.tar.gz
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --title "termchat $TAG" \
+            --notes "## Install
+
+          **curl:**
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/enesdindas/termchat-client/main/install.sh | sh
+          \`\`\`
+
+          **Homebrew:**
+          \`\`\`bash
+          brew tap enesdindas/termchat
+          brew install termchat
+          \`\`\`" \
+            artifacts/termchat-macos-arm64/termchat-macos-arm64.tar.gz \
+            artifacts/termchat-macos-x86_64/termchat-macos-x86_64.tar.gz \
+            artifacts/termchat-linux-x86_64/termchat-linux-x86_64.tar.gz \
+            artifacts/termchat-linux-arm64/termchat-linux-arm64.tar.gz
+
+  update-homebrew:
+    name: Update Homebrew tap
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Compute SHA256 checksums
+        id: sha
+        run: |
+          echo "macos_arm64=$(sha256sum artifacts/termchat-macos-arm64/termchat-macos-arm64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "macos_x86_64=$(sha256sum artifacts/termchat-macos-x86_64/termchat-macos-x86_64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "linux_x86_64=$(sha256sum artifacts/termchat-linux-x86_64/termchat-linux-x86_64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "linux_arm64=$(sha256sum artifacts/termchat-linux-arm64/termchat-linux-arm64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+
+      - name: Checkout homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: enesdindas/homebrew-termchat
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-termchat
+
+      - name: Update formula
+        env:
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ github.ref_name }}
+          MACOS_ARM64_SHA: ${{ steps.sha.outputs.macos_arm64 }}
+          MACOS_X86_64_SHA: ${{ steps.sha.outputs.macos_x86_64 }}
+          LINUX_X86_64_SHA: ${{ steps.sha.outputs.linux_x86_64 }}
+          LINUX_ARM64_SHA: ${{ steps.sha.outputs.linux_arm64 }}
+        run: |
+          VERSION="${VERSION#v}"
+          cat > homebrew-termchat/Formula/termchat.rb << EOF
+          class Termchat < Formula
+            desc "Terminal chat application with channels and direct messages"
+            homepage "https://github.com/enesdindas/termchat-client"
+            version "$VERSION"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/enesdindas/termchat-client/releases/download/$TAG/termchat-macos-arm64.tar.gz"
+                sha256 "$MACOS_ARM64_SHA"
+              end
+              on_intel do
+                url "https://github.com/enesdindas/termchat-client/releases/download/$TAG/termchat-macos-x86_64.tar.gz"
+                sha256 "$MACOS_X86_64_SHA"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/enesdindas/termchat-client/releases/download/$TAG/termchat-linux-arm64.tar.gz"
+                sha256 "$LINUX_ARM64_SHA"
+              end
+              on_intel do
+                url "https://github.com/enesdindas/termchat-client/releases/download/$TAG/termchat-linux-x86_64.tar.gz"
+                sha256 "$LINUX_X86_64_SHA"
+              end
+            end
+
+            def install
+              bin.install "termchat"
+            end
+
+            test do
+              assert_match "termchat", shell_output("#{bin}/termchat --version")
+            end
+          end
+          EOF
+
+      - name: Commit and push formula
+        working-directory: homebrew-termchat
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/termchat.rb
+          git commit -m "termchat ${{ github.ref_name }}"
+          git push
