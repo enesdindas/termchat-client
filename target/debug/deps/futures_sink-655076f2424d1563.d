@@ -1,0 +1,7 @@
+/Users/ns/workspace/termchat/termchat-client/target/debug/deps/futures_sink-655076f2424d1563.d: /Users/ns/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-sink-0.3.32/src/lib.rs
+
+/Users/ns/workspace/termchat/termchat-client/target/debug/deps/libfutures_sink-655076f2424d1563.rlib: /Users/ns/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-sink-0.3.32/src/lib.rs
+
+/Users/ns/workspace/termchat/termchat-client/target/debug/deps/libfutures_sink-655076f2424d1563.rmeta: /Users/ns/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-sink-0.3.32/src/lib.rs
+
+/Users/ns/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-sink-0.3.32/src/lib.rs:
