@@ -66,9 +66,6 @@ async fn handle_main_key(
 ) -> bool {
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
-        KeyCode::Esc => {
-            // Toggle focus to sidebar navigation
-        }
         KeyCode::Enter => {
             let content = state.take_input();
             if content.is_empty() {
@@ -116,11 +113,11 @@ async fn handle_main_key(
         KeyCode::PageDown => {
             state.chat_scroll = state.chat_scroll.saturating_sub(5);
         }
-        // Navigate sidebar with Alt+Up/Down or Ctrl+Up/Down
-        KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+        // Up/Down navigate sidebar when input is empty; Alt+Up/Down always navigate
+        KeyCode::Up if state.input_buffer.is_empty() || key.modifiers.contains(KeyModifiers::ALT) => {
             navigate_sidebar(state, -1);
         }
-        KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+        KeyCode::Down if state.input_buffer.is_empty() || key.modifiers.contains(KeyModifiers::ALT) => {
             navigate_sidebar(state, 1);
         }
         _ => {}

@@ -42,7 +42,7 @@ That's it. The app connects to the public server automatically. Register a new a
 |-----|--------|
 | Type | Compose message |
 | `Enter` | Send message |
-| `Alt+↑` / `Alt+↓` | Navigate channels / DMs in sidebar |
+| `↑` / `↓` | Navigate channels / DMs in sidebar (when input is empty) |
 | `PageUp` / `PageDown` | Scroll chat history |
 | `Ctrl+C` | Quit |
 
