@@ -1,25 +1,34 @@
-# termchat-client
+# termchat
 
-Rust terminal UI client for termchat. Built with [ratatui](https://ratatui.rs/) and [tokio](https://tokio.rs/).
+A terminal chat application with channels and direct messages. Runs entirely in your terminal.
 
-## Requirements
+## Install
 
-- Rust 1.70+ (install via [rustup](https://rustup.rs/))
-- A running `termchat-server` instance
-
-## Quick Start
+**macOS / Linux via curl (recommended):**
 
 ```bash
-# Run with default server (localhost:8080)
-cargo run
-
-# Or point to a different server
-TERMCHAT_SERVER=http://myserver:8080 cargo run
+curl -fsSL https://raw.githubusercontent.com/enesdindas/termchat-client/main/install.sh | sh
 ```
+
+**macOS via Homebrew:**
+
+```bash
+brew tap enesdindas/termchat
+brew install termchat
+```
+
+## Run
+
+```bash
+termchat
+```
+
+That's it. The app connects to the public server automatically. Register a new account on first launch.
 
 ## Usage
 
-### Login Screen
+### Login screen
+
 | Key | Action |
 |-----|--------|
 | `Tab` | Switch between username / password fields |
@@ -27,12 +36,13 @@ TERMCHAT_SERVER=http://myserver:8080 cargo run
 | `Ctrl+R` | Register new account |
 | `Ctrl+C` | Quit |
 
-### Main Screen
+### Main screen
+
 | Key | Action |
 |-----|--------|
 | Type | Compose message |
 | `Enter` | Send message |
-| `Alt+↑` / `Alt+↓` | Navigate channels/DMs in sidebar |
+| `Alt+↑` / `Alt+↓` | Navigate channels / DMs in sidebar |
 | `PageUp` / `PageDown` | Scroll chat history |
 | `Ctrl+C` | Quit |
 
@@ -53,23 +63,30 @@ TERMCHAT_SERVER=http://myserver:8080 cargo run
 └──────────────────┴───────────────────────────────────────────────┘
 ```
 
-- `#` items are channels
-- `@` items are direct messages
+- `#` items are channels — join public rooms and chat with everyone in them
+- `@` items are direct messages — private 1:1 conversations
 - Numbers in parentheses show unread message count
+- Your login token is saved to `~/.config/termchat/token` so you stay logged in
 
-## Configuration
+## Connect to a different server
 
-| Variable | Default | Description |
-|---|---|---|
-| `TERMCHAT_SERVER` | `http://localhost:8080` | Server base URL |
-
-Your JWT token is automatically saved to `~/.config/termchat/token` after login so you stay logged in between sessions.
-
-## Development
+By default termchat connects to the hosted server at `https://termchat-server-09qq.onrender.com`. To use your own:
 
 ```bash
-make test    # Run all tests
-make lint    # Run clippy
-make build   # Release build → target/release/termchat
-make clean   # Clean build artifacts
+TERMCHAT_SERVER=http://localhost:8080 termchat
 ```
+
+## Build from source
+
+Requires Rust 1.70+ ([install via rustup](https://rustup.rs/)).
+
+```bash
+git clone https://github.com/enesdindas/termchat-client
+cd termchat-client
+cargo build --release
+./target/release/termchat
+```
+
+## Server
+
+The backend is open source at [enesdindas/termchat-server](https://github.com/enesdindas/termchat-server). Self-hosting instructions are in that repo's README.
