@@ -83,8 +83,20 @@ impl App {
                     self.handle_ws_message(env, &mut state, &mut rest, &mut ws_tx, &mut ws_rx).await;
                 }
 
-                // Tick: process pending auth actions
+                // Tick: process pending auth actions and lazy history loads
                 _ = tick.tick() => {
+                    if let Some(partner_id) = state.pending_dm_history.take() {
+                        if let Ok(msgs) = rest.get_dm_history(partner_id, None).await {
+                            let queue = state.dm_messages.entry(partner_id).or_default();
+                            for dm in msgs {
+                                queue.push_back(dm);
+                            }
+                            if state.active_conversation == Some(crate::state::ConversationKind::DM(partner_id)) {
+                                state.chat_scroll = 0;
+                            }
+                        }
+                    }
+
                     if pending_login {
                         pending_login = false;
                         state.login_error = None;
@@ -184,17 +196,20 @@ impl App {
                 *ws_tx = Some(conn.sender);
                 *ws_rx = Some(rx);
 
+                // Load history for all channels
+                let channel_ids: Vec<i64> = state.channels.iter().map(|c| c.id).collect();
+                for id in channel_ids {
+                    if let Ok(msgs) = rest.get_channel_messages(id, None).await {
+                        let queue = state.channel_messages.entry(id).or_default();
+                        for msg in msgs {
+                            queue.push_back(msg);
+                        }
+                    }
+                }
                 // Select the first channel by default
                 if let Some(first_ch) = state.channels.first() {
                     let id = first_ch.id;
                     state.select_channel(id);
-                    // Load history
-                    if let Ok(msgs) = rest.get_channel_messages(id, None).await {
-                        for msg in msgs {
-                            let queue = state.channel_messages.entry(id).or_default();
-                            queue.push_back(msg);
-                        }
-                    }
                 }
             }
             Err(e) => {

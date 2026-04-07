@@ -56,6 +56,9 @@ pub struct AppState {
     // Unread counts
     pub unread_channels: HashMap<i64, usize>,
     pub unread_dms: HashMap<i64, usize>,
+
+    // Set when a DM is selected and history hasn't been loaded yet
+    pub pending_dm_history: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,6 +88,7 @@ impl AppState {
             status_message: None,
             unread_channels: HashMap::new(),
             unread_dms: HashMap::new(),
+            pending_dm_history: None,
         }
     }
 
@@ -98,6 +102,10 @@ impl AppState {
         self.active_conversation = Some(ConversationKind::DM(partner_id));
         self.chat_scroll = 0;
         self.unread_dms.remove(&partner_id);
+        // Trigger history load if not yet cached
+        if !self.dm_messages.contains_key(&partner_id) {
+            self.pending_dm_history = Some(partner_id);
+        }
     }
 
     pub fn add_channel_message(&mut self, msg: Message) {
