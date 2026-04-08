@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use crate::models::{Channel, ChannelMember, DirectMessage, Message, User};
+use crate::models::{Channel, ChannelMember, DirectMessage, Message, User, WsEnvelope};
 
 const MAX_MESSAGES: usize = 500;
 
@@ -8,13 +8,6 @@ const MAX_MESSAGES: usize = 500;
 pub enum Screen {
     Login,
     Main,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ActivePane {
-    Sidebar,
-    Chat,
-    Input,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -68,6 +61,14 @@ impl Modal {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum WsLifecycle {
+    Disconnected,
+    Connecting,
+    Connected,
+    Reconnecting,
+}
+
 pub struct AppState {
     pub screen: Screen,
     pub current_user: Option<User>,
@@ -83,7 +84,6 @@ pub struct AppState {
     pub channels: Vec<Channel>,
     pub users: Vec<User>, // all users for DM
     pub active_conversation: Option<ConversationKind>,
-    pub active_pane: ActivePane,
 
     // Message caches
     pub channel_messages: HashMap<i64, VecDeque<Message>>,
@@ -97,6 +97,7 @@ pub struct AppState {
 
     // Status / error bar
     pub status_message: Option<String>,
+    pub ws_lifecycle: WsLifecycle,
 
     // Unread counts
     pub unread_channels: HashMap<i64, usize>,
@@ -116,6 +117,7 @@ pub struct AppState {
     pub pending_remove_member: Option<(i64, i64)>,
     pub pending_self_join: Option<i64>,
     pub pending_logout: bool,
+    pub pending_ws_outbox: VecDeque<WsEnvelope>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -137,12 +139,12 @@ impl AppState {
             channels: Vec::new(),
             users: Vec::new(),
             active_conversation: None,
-            active_pane: ActivePane::Input,
             channel_messages: HashMap::new(),
             dm_messages: HashMap::new(),
             input_buffer: String::new(),
             chat_scroll: 0,
             status_message: None,
+            ws_lifecycle: WsLifecycle::Disconnected,
             unread_channels: HashMap::new(),
             unread_dms: HashMap::new(),
             pending_dm_history: None,
@@ -154,6 +156,7 @@ impl AppState {
             pending_remove_member: None,
             pending_self_join: None,
             pending_logout: false,
+            pending_ws_outbox: VecDeque::new(),
         }
     }
 
@@ -278,10 +281,6 @@ impl AppState {
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
-    }
-
-    pub fn clear_status(&mut self) {
-        self.status_message = None;
     }
 
     /// Returns sidebar items: channels then DM users

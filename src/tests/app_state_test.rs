@@ -204,7 +204,5 @@ mod tests {
         let mut state = AppState::new();
         state.set_status("connecting...");
         assert_eq!(state.status_message.as_deref(), Some("connecting..."));
-        state.clear_status();
-        assert!(state.status_message.is_none());
     }
 }
