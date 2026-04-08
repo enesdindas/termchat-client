@@ -114,32 +114,36 @@ async fn handle_main_key(
             if content.is_empty() {
                 return false;
             }
-            if let Some(ws) = ws_tx {
-                match &state.active_conversation {
-                    Some(ConversationKind::Channel(channel_id)) => {
-                        let env = WsEnvelope::new(
-                            "message.send",
-                            serde_json::json!({
-                                "channel_id": channel_id,
-                                "content": content,
-                            }),
-                        );
-                        let _ = ws.send(serde_json::to_string(&env).unwrap()).await;
-                    }
-                    Some(ConversationKind::DM(partner_id)) => {
-                        let env = WsEnvelope::new(
-                            "dm.send",
-                            serde_json::json!({
-                                "recipient_id": partner_id,
-                                "content": content,
-                            }),
-                        );
-                        let _ = ws.send(serde_json::to_string(&env).unwrap()).await;
-                    }
-                    None => {
-                        state.set_status("Select a channel or DM first");
-                    }
+            let env = match &state.active_conversation {
+                Some(ConversationKind::Channel(channel_id)) => WsEnvelope::new(
+                    "message.send",
+                    serde_json::json!({
+                        "channel_id": channel_id,
+                        "content": content,
+                    }),
+                ),
+                Some(ConversationKind::DM(partner_id)) => WsEnvelope::new(
+                    "dm.send",
+                    serde_json::json!({
+                        "recipient_id": partner_id,
+                        "content": content,
+                    }),
+                ),
+                None => {
+                    state.set_status("Select a channel or DM first");
+                    return false;
                 }
+            };
+
+            if let Some(ws) = ws_tx {
+                let payload = serde_json::to_string(&env).unwrap();
+                if ws.send(payload).await.is_err() {
+                    state.pending_ws_outbox.push_back(env);
+                    state.set_status("Connection issue: message queued for retry");
+                }
+            } else {
+                state.pending_ws_outbox.push_back(env);
+                state.set_status("Offline: message queued for retry");
             }
         }
         KeyCode::Char(c) => {

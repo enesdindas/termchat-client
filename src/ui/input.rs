@@ -12,7 +12,13 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let title = if let Some(status) = &state.status_message {
         format!(" {} ", status)
     } else {
-        " Message (Enter to send, Esc for sidebar) ".to_string()
+        let ws = match state.ws_lifecycle {
+            crate::state::WsLifecycle::Connected => "online",
+            crate::state::WsLifecycle::Connecting => "connecting",
+            crate::state::WsLifecycle::Reconnecting => "reconnecting",
+            crate::state::WsLifecycle::Disconnected => "offline",
+        };
+        format!(" Message ({} | Enter to send) ", ws)
     };
 
     // Show cursor at end

@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
@@ -10,11 +10,11 @@ use tokio::sync::mpsc;
 use tokio::time::interval;
 
 use crate::{
-    api::{RestClient, WsConnection},
+    api::{RestClient, WsConnection, WsEvent},
     config::Config,
     events::handle_key,
     models::WsEnvelope,
-    state::{AppState, Modal, Screen},
+    state::{AppState, Modal, Screen, WsLifecycle},
     ui::layout,
 };
 
@@ -34,16 +34,24 @@ impl App {
         let mut state = AppState::new();
         let mut rest = RestClient::new(self.config.server_url.clone());
         let mut ws_tx: Option<mpsc::Sender<String>> = None;
-        let mut ws_rx: Option<mpsc::Receiver<WsEnvelope>> = None;
+        let mut ws_rx: Option<mpsc::Receiver<WsEvent>> = None;
+        let mut session_token: Option<String> = None;
+        let mut reconnect_attempts: u8 = 0;
+        let mut reconnect_at: Option<Instant> = None;
 
         // Try to restore saved token
         if let Some(token) = self.config.load_token() {
             rest.set_token(token.clone());
             // Verify token is still valid
             if let Ok(user) = rest.me().await {
+                session_token = Some(token.clone());
                 state.current_user = Some(user);
                 state.screen = Screen::Main;
-                self.init_main(&mut state, &mut rest, &token, &mut ws_tx, &mut ws_rx).await;
+                if !self.init_main(&mut state, &mut rest, &token, &mut ws_tx, &mut ws_rx).await {
+                    state.ws_lifecycle = WsLifecycle::Reconnecting;
+                    reconnect_at = Some(Instant::now() + Duration::from_secs(1));
+                    reconnect_attempts = 1;
+                }
             }
         }
 
@@ -78,13 +86,44 @@ impl App {
                     }
                 }
 
-                // Incoming WebSocket messages
-                Some(env) = async { if let Some(rx) = ws_rx.as_mut() { rx.recv().await } else { None } } => {
-                    self.handle_ws_message(env, &mut state, &mut rest, &mut ws_tx, &mut ws_rx).await;
+                // Incoming WebSocket events
+                Some(event) = async { if let Some(rx) = ws_rx.as_mut() { rx.recv().await } else { None } } => {
+                    match event {
+                        WsEvent::Envelope(env) => {
+                            self.handle_ws_message(env, &mut state).await;
+                        }
+                        WsEvent::Disconnected(reason) => {
+                            ws_tx = None;
+                            ws_rx = None;
+                            if state.screen == Screen::Main && session_token.is_some() {
+                                state.ws_lifecycle = WsLifecycle::Reconnecting;
+                                state.set_status(format!("Connection lost: {}", reason));
+                                if reconnect_attempts < 5 {
+                                    reconnect_attempts += 1;
+                                    let wait_secs = 2u64.pow(reconnect_attempts.saturating_sub(1) as u32);
+                                    reconnect_at = Some(Instant::now() + Duration::from_secs(wait_secs));
+                                } else {
+                                    state.ws_lifecycle = WsLifecycle::Disconnected;
+                                    state.set_status("Disconnected: retry limit reached");
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Tick: process pending auth actions and lazy history loads
                 _ = tick.tick() => {
+                    if let Some(tx) = ws_tx.as_ref() {
+                        while let Some(env) = state.pending_ws_outbox.front().cloned() {
+                            let payload = serde_json::to_string(&env).unwrap();
+                            if tx.send(payload).await.is_ok() {
+                                state.pending_ws_outbox.pop_front();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+
                     if let Some(partner_id) = state.pending_dm_history.take() {
                         if let Ok(msgs) = rest.get_dm_history(partner_id, None).await {
                             let queue = state.dm_messages.entry(partner_id).or_default();
@@ -106,11 +145,15 @@ impl App {
                         match rest.login(&username, &password).await {
                             Ok(data) => {
                                 rest.set_token(data.token.clone());
+                                session_token = Some(data.token.clone());
                                 let _ = self.config.save_token(&data.token);
                                 state.current_user = Some(data.user);
                                 state.login_status = None;
                                 state.screen = Screen::Main;
-                                self.init_main(&mut state, &mut rest, &data.token, &mut ws_tx, &mut ws_rx).await;
+                                if self.init_main(&mut state, &mut rest, &data.token, &mut ws_tx, &mut ws_rx).await {
+                                    reconnect_attempts = 0;
+                                    reconnect_at = None;
+                                }
                             }
                             Err(e) => {
                                 state.login_error = Some(format!("{}", e));
@@ -120,6 +163,37 @@ impl App {
                     }
 
                     self.process_pending_modal_actions(&mut state, &mut rest, &mut ws_tx, &mut ws_rx).await;
+                    if state.pending_logout {
+                        session_token = None;
+                        reconnect_attempts = 0;
+                        reconnect_at = None;
+                    }
+
+                    if state.screen == Screen::Main
+                        && ws_tx.is_none()
+                        && session_token.is_some()
+                        && reconnect_attempts > 0
+                    {
+                        if let Some(deadline) = reconnect_at {
+                            if Instant::now() >= deadline {
+                                if let Some(token) = session_token.as_ref() {
+                                    state.ws_lifecycle = WsLifecycle::Reconnecting;
+                                    if self.connect_ws(&mut state, token, &mut ws_tx, &mut ws_rx).await.is_ok() {
+                                        reconnect_attempts = 0;
+                                        reconnect_at = None;
+                                        state.set_status("Reconnected");
+                                    } else if reconnect_attempts < 5 {
+                                        reconnect_attempts += 1;
+                                        let wait_secs = 2u64.pow(reconnect_attempts.saturating_sub(1) as u32);
+                                        reconnect_at = Some(Instant::now() + Duration::from_secs(wait_secs));
+                                    } else {
+                                        state.ws_lifecycle = WsLifecycle::Disconnected;
+                                        state.set_status("Disconnected: retry limit reached");
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     if pending_register {
                         pending_register = false;
@@ -133,11 +207,15 @@ impl App {
                                 match rest.login(&username, &password).await {
                                     Ok(data) => {
                                         rest.set_token(data.token.clone());
+                                        session_token = Some(data.token.clone());
                                         let _ = self.config.save_token(&data.token);
                                         state.current_user = Some(data.user);
                                         state.login_status = None;
                                         state.screen = Screen::Main;
-                                        self.init_main(&mut state, &mut rest, &data.token, &mut ws_tx, &mut ws_rx).await;
+                                        if self.init_main(&mut state, &mut rest, &data.token, &mut ws_tx, &mut ws_rx).await {
+                                            reconnect_attempts = 0;
+                                            reconnect_at = None;
+                                        }
                                     }
                                     Err(e) => {
                                         state.login_error = Some(format!("{}", e));
@@ -162,8 +240,8 @@ impl App {
         rest: &mut RestClient,
         token: &str,
         ws_tx: &mut Option<mpsc::Sender<String>>,
-        ws_rx: &mut Option<mpsc::Receiver<WsEnvelope>>,
-    ) {
+        ws_rx: &mut Option<mpsc::Receiver<WsEvent>>,
+    ) -> bool {
         // Load channels and users
         if let Ok(channels) = rest.list_channels().await {
             state.channels = channels;
@@ -172,52 +250,67 @@ impl App {
             state.users = users;
         }
 
-        // Connect WebSocket
-        let ws_url = self.config.ws_url();
-        match WsConnection::connect(&ws_url, token).await {
-            Ok((conn, rx)) => {
-                // Subscribe to all known channels and DMs
-                let channel_ids: Vec<i64> = state.channels.iter().map(|c| c.id).collect();
-                let my_id = state.current_user.as_ref().map(|u| u.id).unwrap_or(0);
-                let dm_user_ids: Vec<i64> = state
-                    .users
-                    .iter()
-                    .filter(|u| u.id != my_id)
-                    .map(|u| u.id)
-                    .collect();
+        if let Err(e) = self.connect_ws(state, token, ws_tx, ws_rx).await {
+            state.set_status(format!("WS connect failed: {}", e));
+            return false;
+        }
 
-                let sub = WsEnvelope::new(
-                    "subscribe",
-                    serde_json::json!({
-                        "channel_ids": channel_ids,
-                        "dm_user_ids": dm_user_ids,
-                    }),
-                );
-                let _ = conn.send(&sub).await;
-
-                *ws_tx = Some(conn.sender);
-                *ws_rx = Some(rx);
-
-                // Load history for all channels
-                let channel_ids: Vec<i64> = state.channels.iter().map(|c| c.id).collect();
-                for id in channel_ids {
-                    if let Ok(msgs) = rest.get_channel_messages(id, None).await {
-                        let queue = state.channel_messages.entry(id).or_default();
-                        for msg in msgs {
-                            queue.push_back(msg);
-                        }
-                    }
-                }
-                // Select the first channel by default
-                if let Some(first_ch) = state.channels.first() {
-                    let id = first_ch.id;
-                    state.select_channel(id);
-                }
+        // Load history for all channels once during initial session entry.
+        let channel_ids: Vec<i64> = state.channels.iter().map(|c| c.id).collect();
+        for id in channel_ids {
+            if state.channel_messages.contains_key(&id) {
+                continue;
             }
-            Err(e) => {
-                state.set_status(format!("WS connect failed: {}", e));
+            if let Ok(msgs) = rest.get_channel_messages(id, None).await {
+                let queue = state.channel_messages.entry(id).or_default();
+                for msg in msgs {
+                    queue.push_back(msg);
+                }
             }
         }
+        // Select the first channel by default only if nothing is selected.
+        if state.active_conversation.is_none() {
+            if let Some(first_ch) = state.channels.first() {
+                let id = first_ch.id;
+                state.select_channel(id);
+            }
+        }
+        true
+    }
+
+    async fn connect_ws(
+        &self,
+        state: &mut AppState,
+        token: &str,
+        ws_tx: &mut Option<mpsc::Sender<String>>,
+        ws_rx: &mut Option<mpsc::Receiver<WsEvent>>,
+    ) -> Result<()> {
+        state.ws_lifecycle = WsLifecycle::Connecting;
+        let ws_url = self.config.ws_url();
+        let (conn, rx) = WsConnection::connect(&ws_url, token).await?;
+
+        // Subscribe to all known channels and DMs.
+        let channel_ids: Vec<i64> = state.channels.iter().map(|c| c.id).collect();
+        let my_id = state.current_user.as_ref().map(|u| u.id).unwrap_or(0);
+        let dm_user_ids: Vec<i64> = state
+            .users
+            .iter()
+            .filter(|u| u.id != my_id)
+            .map(|u| u.id)
+            .collect();
+        let sub = WsEnvelope::new(
+            "subscribe",
+            serde_json::json!({
+                "channel_ids": channel_ids,
+                "dm_user_ids": dm_user_ids,
+            }),
+        );
+        conn.send(&sub).await?;
+
+        *ws_tx = Some(conn.sender);
+        *ws_rx = Some(rx);
+        state.ws_lifecycle = WsLifecycle::Connected;
+        Ok(())
     }
 
     async fn process_pending_modal_actions(
@@ -225,7 +318,7 @@ impl App {
         state: &mut AppState,
         rest: &mut RestClient,
         ws_tx: &mut Option<mpsc::Sender<String>>,
-        ws_rx: &mut Option<mpsc::Receiver<WsEnvelope>>,
+        ws_rx: &mut Option<mpsc::Receiver<WsEvent>>,
     ) {
         // Create channel
         if state.pending_create_channel {
@@ -370,9 +463,6 @@ impl App {
         &self,
         env: WsEnvelope,
         state: &mut AppState,
-        _rest: &mut RestClient,
-        _ws_tx: &mut Option<mpsc::Sender<String>>,
-        _ws_rx: &mut Option<mpsc::Receiver<WsEnvelope>>,
     ) {
         match env.event_type.as_str() {
             "message.new" => {

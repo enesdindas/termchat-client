@@ -149,15 +149,6 @@ impl RestClient {
         .await
     }
 
-    pub async fn leave_channel(&self, channel_id: i64) -> Result<Value> {
-        self.post(
-            &format!("/api/channels/{}/leave", channel_id),
-            &serde_json::json!({}),
-            true,
-        )
-        .await
-    }
-
     pub async fn list_members(&self, channel_id: i64) -> Result<Vec<ChannelMember>> {
         self.get(&format!("/api/channels/{}/members", channel_id))
             .await
