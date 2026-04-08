@@ -14,7 +14,7 @@ use crate::{
     config::Config,
     events::handle_key,
     models::WsEnvelope,
-    state::{AppState, Screen},
+    state::{AppState, Modal, Screen},
     ui::layout,
 };
 
@@ -119,6 +119,8 @@ impl App {
                         }
                     }
 
+                    self.process_pending_modal_actions(&mut state, &mut rest, &mut ws_tx, &mut ws_rx).await;
+
                     if pending_register {
                         pending_register = false;
                         state.login_error = None;
@@ -215,6 +217,152 @@ impl App {
             Err(e) => {
                 state.set_status(format!("WS connect failed: {}", e));
             }
+        }
+    }
+
+    async fn process_pending_modal_actions(
+        &self,
+        state: &mut AppState,
+        rest: &mut RestClient,
+        ws_tx: &mut Option<mpsc::Sender<String>>,
+        ws_rx: &mut Option<mpsc::Receiver<WsEnvelope>>,
+    ) {
+        // Create channel
+        if state.pending_create_channel {
+            state.pending_create_channel = false;
+            if let Modal::CreateChannel { name, description, is_private, field, .. } = state.modal.clone() {
+                match rest.create_channel(name.trim(), description.trim(), is_private).await {
+                    Ok(ch) => {
+                        let id = ch.id;
+                        state.channels.push(ch);
+                        state.channels.sort_by(|a, b| a.name.cmp(&b.name));
+                        state.set_status(format!("Created channel #{}", name));
+                        state.close_modal();
+                        // Subscribe to new channel via existing WS
+                        if let Some(tx) = ws_tx.as_ref() {
+                            let env = WsEnvelope::new(
+                                "subscribe",
+                                serde_json::json!({ "channel_ids": [id], "dm_user_ids": Vec::<i64>::new() }),
+                            );
+                            let _ = tx.send(serde_json::to_string(&env).unwrap()).await;
+                        }
+                        state.select_channel(id);
+                    }
+                    Err(e) => {
+                        state.modal = Modal::CreateChannel {
+                            name,
+                            description,
+                            is_private,
+                            field,
+                            error: Some(format!("{}", e)),
+                        };
+                    }
+                }
+            }
+        }
+
+        // Load members for MembersList modal
+        if let Some(channel_id) = state.pending_load_members.take() {
+            match rest.list_members(channel_id).await {
+                Ok(members) => {
+                    if let Modal::MembersList { channel_id: cid, .. } = &state.modal {
+                        if *cid == channel_id {
+                            state.modal = Modal::MembersList {
+                                channel_id,
+                                members,
+                                loading: false,
+                            };
+                        }
+                    }
+                }
+                Err(e) => {
+                    state.set_status(format!("Members load failed: {}", e));
+                    state.close_modal();
+                }
+            }
+        }
+
+        // Load members for RemoveMember modal
+        if let Some(channel_id) = state.pending_load_members_remove.take() {
+            match rest.list_members(channel_id).await {
+                Ok(members) => {
+                    if let Modal::RemoveMember { channel_id: cid, .. } = &state.modal {
+                        if *cid == channel_id {
+                            state.modal = Modal::RemoveMember {
+                                channel_id,
+                                members,
+                                cursor: 0,
+                                loading: false,
+                            };
+                        }
+                    }
+                }
+                Err(e) => {
+                    state.set_status(format!("Members load failed: {}", e));
+                    state.close_modal();
+                }
+            }
+        }
+
+        // Add member
+        if let Some((channel_id, user_id)) = state.pending_add_member.take() {
+            match rest.add_member(channel_id, user_id).await {
+                Ok(_) => {
+                    state.set_status("User added");
+                    state.close_modal();
+                }
+                Err(e) => {
+                    if let Modal::AddMember { username_input, .. } = state.modal.clone() {
+                        state.modal = Modal::AddMember {
+                            channel_id,
+                            username_input,
+                            error: Some(format!("{}", e)),
+                        };
+                    }
+                }
+            }
+        }
+
+        // Remove member
+        if let Some((channel_id, user_id)) = state.pending_remove_member.take() {
+            match rest.remove_member(channel_id, user_id).await {
+                Ok(_) => {
+                    state.set_status("User removed");
+                    // Refresh the member list in the modal
+                    if let Ok(members) = rest.list_members(channel_id).await {
+                        if let Modal::RemoveMember { cursor, .. } = &state.modal {
+                            let new_cursor = (*cursor).min(members.len().saturating_sub(1));
+                            state.modal = Modal::RemoveMember {
+                                channel_id,
+                                members,
+                                cursor: new_cursor,
+                                loading: false,
+                            };
+                        }
+                    }
+                }
+                Err(e) => {
+                    state.set_status(format!("Remove failed: {}", e));
+                }
+            }
+        }
+
+        // Self-join (Ctrl+J)
+        if let Some(channel_id) = state.pending_self_join.take() {
+            match rest.join_channel(channel_id).await {
+                Ok(_) => state.set_status("Joined channel"),
+                Err(e) => state.set_status(format!("Join failed: {}", e)),
+            }
+        }
+
+        // Logout
+        if state.pending_logout {
+            state.pending_logout = false;
+            let _ = self.config.delete_token();
+            *ws_tx = None;
+            *ws_rx = None;
+            *state = AppState::new();
+            state.set_status("Logged out");
         }
     }
 

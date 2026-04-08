@@ -6,6 +6,8 @@ pub struct Channel {
     pub name: String,
     pub description: String,
     pub owner_id: i64,
+    #[serde(default)]
+    pub is_private: bool,
     pub created_at: String,
 }
 

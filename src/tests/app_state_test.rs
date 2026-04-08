@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests {
     use crate::{
-        models::{Channel, DirectMessage, Message, User},
-        state::{AppState, ConversationKind, Screen},
+        models::{Channel, ChannelMember, DirectMessage, Message, User},
+        state::{AppState, ConversationKind, CreateChannelField, Modal, Screen},
     };
 
     fn make_user(id: i64, username: &str) -> User {
@@ -113,12 +113,90 @@ mod tests {
             name: "general".to_string(),
             description: "".to_string(),
             owner_id: 1,
+            is_private: false,
             created_at: "2026-01-01".to_string(),
         }];
 
         let items = state.sidebar_items();
         // 1 channel + 2 users (bob + charlie, not alice)
         assert_eq!(items.len(), 3);
+    }
+
+    #[test]
+    fn test_modal_open_close() {
+        let mut state = AppState::new();
+        assert!(!state.modal.is_open());
+        state.open_create_channel();
+        assert!(state.modal.is_open());
+        match &state.modal {
+            Modal::CreateChannel { name, field, is_private, .. } => {
+                assert_eq!(name, "");
+                assert_eq!(field, &CreateChannelField::Name);
+                assert!(!is_private);
+            }
+            _ => panic!("expected CreateChannel modal"),
+        }
+        state.close_modal();
+        assert!(!state.modal.is_open());
+    }
+
+    #[test]
+    fn test_open_members_list_sets_pending() {
+        let mut state = AppState::new();
+        state.open_members_list(42);
+        assert_eq!(state.pending_load_members, Some(42));
+        match &state.modal {
+            Modal::MembersList { channel_id, loading, members } => {
+                assert_eq!(*channel_id, 42);
+                assert!(*loading);
+                assert!(members.is_empty());
+            }
+            _ => panic!("expected MembersList modal"),
+        }
+    }
+
+    #[test]
+    fn test_active_channel_id() {
+        let mut state = AppState::new();
+        assert_eq!(state.active_channel_id(), None);
+        state.active_conversation = Some(ConversationKind::Channel(7));
+        assert_eq!(state.active_channel_id(), Some(7));
+        state.active_conversation = Some(ConversationKind::DM(7));
+        assert_eq!(state.active_channel_id(), None);
+    }
+
+    #[test]
+    fn test_channel_deserialize_with_is_private() {
+        let json = r#"{"id":1,"name":"x","description":"","owner_id":1,"is_private":true,"created_at":"2026-01-01"}"#;
+        let ch: Channel = serde_json::from_str(json).unwrap();
+        assert!(ch.is_private);
+    }
+
+    #[test]
+    fn test_channel_deserialize_without_is_private_defaults_false() {
+        let json = r#"{"id":1,"name":"x","description":"","owner_id":1,"created_at":"2026-01-01"}"#;
+        let ch: Channel = serde_json::from_str(json).unwrap();
+        assert!(!ch.is_private);
+    }
+
+    #[test]
+    fn test_remove_member_modal_holds_members() {
+        let modal = Modal::RemoveMember {
+            channel_id: 1,
+            members: vec![ChannelMember {
+                user_id: 2,
+                username: "bob".to_string(),
+                joined_at: "2026-01-01".to_string(),
+            }],
+            cursor: 0,
+            loading: false,
+        };
+        if let Modal::RemoveMember { members, .. } = &modal {
+            assert_eq!(members.len(), 1);
+            assert_eq!(members[0].username, "bob");
+        } else {
+            panic!("wrong variant");
+        }
     }
 
     #[test]

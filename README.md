@@ -50,7 +50,16 @@ That's it. The app connects to the public server automatically. Register a new a
 | `Enter` | Send message |
 | `↑` / `↓` | Navigate channels / DMs in sidebar (when input is empty) |
 | `PageUp` / `PageDown` | Scroll chat history |
+| `Ctrl+N` | Create a new channel |
+| `Ctrl+L` | Browse all channels |
+| `Ctrl+M` | Show members of the active channel |
+| `Ctrl+U` | Add a user to the active channel (owner only, private channels) |
+| `Ctrl+K` | Remove a user from the active channel (owner only) |
+| `Ctrl+J` | Join the active channel (public channels) |
+| `Ctrl+O` | Logout |
 | `Ctrl+C` | Quit |
+
+All `Ctrl+*` actions open a centered modal popup. Inside a modal: `Tab` switches fields, `Space` toggles checkboxes, `Enter` confirms, `Esc` cancels.
 
 ### Layout
 
@@ -72,78 +81,47 @@ That's it. The app connects to the public server automatically. Register a new a
 - `#` items are channels — join public rooms and chat with everyone in them
 - `@` items are direct messages — private 1:1 conversations
 - Numbers in parentheses show unread message count
-- Your login token is saved to `~/.config/termchat/token` so you stay logged in
+- Your login token is saved to `~/.config/termchat/token` so you stay logged in (use `Ctrl+O` to logout)
 
 ## Channels
 
-Channel creation and membership are managed over the server's REST API. The TUI shows channels you already belong to, but it does not yet have in-app commands for creating or joining them — so the steps below use `curl`.
-
-All examples assume `TERMCHAT_SERVER` is set (defaults to `https://termchat-server-09qq.onrender.com`):
-
-```bash
-export TERMCHAT_SERVER=https://termchat-server-09qq.onrender.com
-```
-
-### Get an auth token
-
-```bash
-TOKEN=$(curl -s -X POST "$TERMCHAT_SERVER/auth/login" \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"alice","password":"hunter2"}' | jq -r .token)
-```
-
-If you're already logged in through the TUI, you can reuse the cached token instead:
-
-```bash
-TOKEN=$(cat ~/.config/termchat/token)
-```
+All channel and membership management lives in the TUI — no `curl` required.
 
 ### Create a channel
 
-The creator is automatically recorded as the owner and joined to the channel.
+Press `Ctrl+N` to open the **Create Channel** popup. Fill in:
 
-```bash
-curl -X POST "$TERMCHAT_SERVER/api/channels" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"general","description":"Company-wide chat"}'
-```
+- **Name** — channel name (required, must be unique)
+- **Description** — optional one-liner
+- **Private** — `Tab` to the privacy field, then `Space` to toggle. Private channels can only be joined by being added by the owner.
 
-The response contains the new channel's `id` — you'll need it for the commands below.
+`Enter` creates the channel. You become the owner and are joined automatically.
 
-### List channels and members
+### Browse channels
 
-```bash
-# All channels on the server
-curl -s "$TERMCHAT_SERVER/api/channels" -H "Authorization: Bearer $TOKEN"
+Press `Ctrl+L` to open the **Channels** popup. Use `↑` / `↓` to move and `Enter` to switch the chat view to that channel. Private channels are tagged `[priv]`.
 
-# Members of channel 42
-curl -s "$TERMCHAT_SERVER/api/channels/42/members" -H "Authorization: Bearer $TOKEN"
-```
+### List channel members
 
-### Add a user to a channel
+Select a channel in the sidebar, then press `Ctrl+M` to see everyone in it.
 
-There is **no admin invite endpoint** — a user joins a channel themselves using their own token. To "add" someone, share the channel `id` and have them run:
+### Join a public channel
 
-```bash
-curl -X POST "$TERMCHAT_SERVER/api/channels/42/join" \
-  -H "Authorization: Bearer $TOKEN"
-```
+Select the channel (via `Ctrl+L` or the sidebar), then press `Ctrl+J`. Private channels reject self-join — ask the owner to add you.
 
-### Remove a user from a channel
+### Add a user to a channel (owner only)
 
-Symmetrically, users remove themselves. There is no admin-side "kick" today.
+Open the channel, press `Ctrl+U`, type the username, `Enter`. Required for getting people into private channels.
 
-```bash
-curl -X POST "$TERMCHAT_SERVER/api/channels/42/leave" \
-  -H "Authorization: Bearer $TOKEN"
-```
+### Remove a user from a channel (owner only)
 
-### Seeing changes in the TUI
+Open the channel, press `Ctrl+K`, highlight the user with `↑` / `↓`, then `Enter`. The channel owner cannot be removed.
 
-The client loads your channel list at login, so after creating or joining a channel you need to **quit and relaunch `termchat`** for it to appear in the sidebar.
+### Logout
 
-For the full endpoint reference (DMs, WebSocket protocol, etc.) see the [termchat-server README](https://github.com/enesdindas/termchat-server#api).
+Press `Ctrl+O`, then `y` to confirm. This deletes the cached token at `~/.config/termchat/token` and returns you to the login screen.
+
+For the full server endpoint reference (DMs, WebSocket protocol, etc.) see the [termchat-server README](https://github.com/enesdindas/termchat-server#api).
 
 ## Connect to a different server
 

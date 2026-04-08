@@ -4,7 +4,7 @@ use ratatui::{
 };
 
 use crate::state::{AppState, Screen};
-use super::{chat, input, login, sidebar};
+use super::{chat, input, login, modal, sidebar};
 
 pub fn render(f: &mut Frame, state: &AppState) {
     match state.screen {
@@ -15,6 +15,7 @@ pub fn render(f: &mut Frame, state: &AppState) {
             render_main(f, state);
         }
     }
+    modal::render(f, state);
 }
 
 fn render_main(f: &mut Frame, state: &AppState) {

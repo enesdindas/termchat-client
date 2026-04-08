@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use crate::models::{Channel, DirectMessage, Message, User};
+use crate::models::{Channel, ChannelMember, DirectMessage, Message, User};
 
 const MAX_MESSAGES: usize = 500;
 
@@ -21,6 +21,51 @@ pub enum ActivePane {
 pub enum ConversationKind {
     Channel(i64),
     DM(i64), // partner user ID
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CreateChannelField {
+    Name,
+    Description,
+    Privacy,
+}
+
+#[derive(Debug, Clone)]
+pub enum Modal {
+    None,
+    CreateChannel {
+        name: String,
+        description: String,
+        is_private: bool,
+        field: CreateChannelField,
+        error: Option<String>,
+    },
+    ChannelList {
+        cursor: usize,
+    },
+    MembersList {
+        channel_id: i64,
+        members: Vec<ChannelMember>,
+        loading: bool,
+    },
+    AddMember {
+        channel_id: i64,
+        username_input: String,
+        error: Option<String>,
+    },
+    RemoveMember {
+        channel_id: i64,
+        members: Vec<ChannelMember>,
+        cursor: usize,
+        loading: bool,
+    },
+    ConfirmLogout,
+}
+
+impl Modal {
+    pub fn is_open(&self) -> bool {
+        !matches!(self, Modal::None)
+    }
 }
 
 pub struct AppState {
@@ -59,6 +104,18 @@ pub struct AppState {
 
     // Set when a DM is selected and history hasn't been loaded yet
     pub pending_dm_history: Option<i64>,
+
+    // Modal state
+    pub modal: Modal,
+
+    // Pending async actions triggered from modals (drained in app tick)
+    pub pending_create_channel: bool,
+    pub pending_load_members: Option<i64>,
+    pub pending_load_members_remove: Option<i64>,
+    pub pending_add_member: Option<(i64, i64)>,
+    pub pending_remove_member: Option<(i64, i64)>,
+    pub pending_self_join: Option<i64>,
+    pub pending_logout: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -89,6 +146,70 @@ impl AppState {
             unread_channels: HashMap::new(),
             unread_dms: HashMap::new(),
             pending_dm_history: None,
+            modal: Modal::None,
+            pending_create_channel: false,
+            pending_load_members: None,
+            pending_load_members_remove: None,
+            pending_add_member: None,
+            pending_remove_member: None,
+            pending_self_join: None,
+            pending_logout: false,
+        }
+    }
+
+    pub fn close_modal(&mut self) {
+        self.modal = Modal::None;
+    }
+
+    pub fn open_create_channel(&mut self) {
+        self.modal = Modal::CreateChannel {
+            name: String::new(),
+            description: String::new(),
+            is_private: false,
+            field: CreateChannelField::Name,
+            error: None,
+        };
+    }
+
+    pub fn open_channel_list(&mut self) {
+        self.modal = Modal::ChannelList { cursor: 0 };
+    }
+
+    pub fn open_members_list(&mut self, channel_id: i64) {
+        self.modal = Modal::MembersList {
+            channel_id,
+            members: Vec::new(),
+            loading: true,
+        };
+        self.pending_load_members = Some(channel_id);
+    }
+
+    pub fn open_add_member(&mut self, channel_id: i64) {
+        self.modal = Modal::AddMember {
+            channel_id,
+            username_input: String::new(),
+            error: None,
+        };
+    }
+
+    pub fn open_remove_member(&mut self, channel_id: i64) {
+        self.modal = Modal::RemoveMember {
+            channel_id,
+            members: Vec::new(),
+            cursor: 0,
+            loading: true,
+        };
+        self.pending_load_members_remove = Some(channel_id);
+    }
+
+    pub fn open_confirm_logout(&mut self) {
+        self.modal = Modal::ConfirmLogout;
+    }
+
+    pub fn active_channel_id(&self) -> Option<i64> {
+        match self.active_conversation {
+            Some(ConversationKind::Channel(id)) => Some(id),
+            _ => None,
         }
     }
 

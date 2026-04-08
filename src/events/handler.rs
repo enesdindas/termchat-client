@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use crate::{
     api::RestClient,
     models::WsEnvelope,
-    state::{AppState, ConversationKind, LoginField, Screen, SidebarItem},
+    state::{AppState, ConversationKind, CreateChannelField, LoginField, Modal, Screen, SidebarItem},
 };
 
 /// Returns true if the application should quit.
@@ -64,8 +64,51 @@ async fn handle_main_key(
     ws_tx: &Option<mpsc::Sender<String>>,
     _rest: &mut RestClient,
 ) -> bool {
+    // Modal captures all input first
+    if state.modal.is_open() {
+        handle_modal_key(key, state);
+        return false;
+    }
+
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.open_create_channel();
+        }
+        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.open_channel_list();
+        }
+        KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(id) = state.active_channel_id() {
+                state.open_members_list(id);
+            } else {
+                state.set_status("Select a channel first");
+            }
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(id) = state.active_channel_id() {
+                state.open_add_member(id);
+            } else {
+                state.set_status("Select a channel first");
+            }
+        }
+        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(id) = state.active_channel_id() {
+                state.open_remove_member(id);
+            } else {
+                state.set_status("Select a channel first");
+            }
+        }
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(id) = state.active_channel_id() {
+                state.pending_self_join = Some(id);
+            } else {
+                state.set_status("Select a channel first");
+            }
+        }
+        KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.open_confirm_logout();
+        }
         KeyCode::Enter => {
             let content = state.take_input();
             if content.is_empty() {
@@ -123,6 +166,159 @@ async fn handle_main_key(
         _ => {}
     }
     false
+}
+
+fn handle_modal_key(key: KeyEvent, state: &mut AppState) {
+    // Universal cancel
+    if key.code == KeyCode::Esc {
+        state.close_modal();
+        return;
+    }
+
+    // Take ownership of the modal so we can mutate freely without borrowing state.
+    let modal = std::mem::replace(&mut state.modal, Modal::None);
+    match modal {
+        Modal::None => {}
+        Modal::CreateChannel {
+            mut name,
+            mut description,
+            mut is_private,
+            mut field,
+            mut error,
+        } => match key.code {
+            KeyCode::Tab => {
+                field = match field {
+                    CreateChannelField::Name => CreateChannelField::Description,
+                    CreateChannelField::Description => CreateChannelField::Privacy,
+                    CreateChannelField::Privacy => CreateChannelField::Name,
+                };
+                state.modal = Modal::CreateChannel { name, description, is_private, field, error };
+            }
+            KeyCode::Char(' ') if field == CreateChannelField::Privacy => {
+                is_private = !is_private;
+                state.modal = Modal::CreateChannel { name, description, is_private, field, error };
+            }
+            KeyCode::Char(c) => {
+                match field {
+                    CreateChannelField::Name => name.push(c),
+                    CreateChannelField::Description => description.push(c),
+                    CreateChannelField::Privacy => {}
+                }
+                state.modal = Modal::CreateChannel { name, description, is_private, field, error };
+            }
+            KeyCode::Backspace => {
+                match field {
+                    CreateChannelField::Name => { name.pop(); }
+                    CreateChannelField::Description => { description.pop(); }
+                    CreateChannelField::Privacy => {}
+                }
+                state.modal = Modal::CreateChannel { name, description, is_private, field, error };
+            }
+            KeyCode::Enter => {
+                if name.trim().is_empty() {
+                    error = Some("name required".to_string());
+                    state.modal = Modal::CreateChannel { name, description, is_private, field, error };
+                } else {
+                    state.pending_create_channel = true;
+                    state.modal = Modal::CreateChannel { name, description, is_private, field, error };
+                }
+            }
+            _ => {
+                state.modal = Modal::CreateChannel { name, description, is_private, field, error };
+            }
+        },
+        Modal::ChannelList { mut cursor } => {
+            let len = state.channels.len();
+            match key.code {
+                KeyCode::Up => {
+                    if len > 0 {
+                        cursor = if cursor == 0 { len - 1 } else { cursor - 1 };
+                    }
+                    state.modal = Modal::ChannelList { cursor };
+                }
+                KeyCode::Down => {
+                    if len > 0 {
+                        cursor = (cursor + 1) % len;
+                    }
+                    state.modal = Modal::ChannelList { cursor };
+                }
+                KeyCode::Enter => {
+                    if let Some(ch) = state.channels.get(cursor).cloned() {
+                        state.select_channel(ch.id);
+                    }
+                    state.close_modal();
+                }
+                _ => {
+                    state.modal = Modal::ChannelList { cursor };
+                }
+            }
+        }
+        Modal::MembersList { channel_id, members, loading } => {
+            // Read-only; any non-Esc key is ignored
+            state.modal = Modal::MembersList { channel_id, members, loading };
+        }
+        Modal::AddMember { channel_id, mut username_input, mut error } => match key.code {
+            KeyCode::Char(c) => {
+                username_input.push(c);
+                state.modal = Modal::AddMember { channel_id, username_input, error };
+            }
+            KeyCode::Backspace => {
+                username_input.pop();
+                state.modal = Modal::AddMember { channel_id, username_input, error };
+            }
+            KeyCode::Enter => {
+                let target = state
+                    .users
+                    .iter()
+                    .find(|u| u.username.eq_ignore_ascii_case(username_input.trim()));
+                if let Some(u) = target {
+                    state.pending_add_member = Some((channel_id, u.id));
+                    state.modal = Modal::AddMember { channel_id, username_input, error };
+                } else {
+                    error = Some(format!("user '{}' not found", username_input.trim()));
+                    state.modal = Modal::AddMember { channel_id, username_input, error };
+                }
+            }
+            _ => {
+                state.modal = Modal::AddMember { channel_id, username_input, error };
+            }
+        },
+        Modal::RemoveMember { channel_id, members, mut cursor, loading } => match key.code {
+            KeyCode::Up => {
+                if !members.is_empty() {
+                    cursor = if cursor == 0 { members.len() - 1 } else { cursor - 1 };
+                }
+                state.modal = Modal::RemoveMember { channel_id, members, cursor, loading };
+            }
+            KeyCode::Down => {
+                if !members.is_empty() {
+                    cursor = (cursor + 1) % members.len();
+                }
+                state.modal = Modal::RemoveMember { channel_id, members, cursor, loading };
+            }
+            KeyCode::Enter => {
+                if let Some(m) = members.get(cursor) {
+                    state.pending_remove_member = Some((channel_id, m.user_id));
+                }
+                state.modal = Modal::RemoveMember { channel_id, members, cursor, loading };
+            }
+            _ => {
+                state.modal = Modal::RemoveMember { channel_id, members, cursor, loading };
+            }
+        },
+        Modal::ConfirmLogout => match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                state.pending_logout = true;
+                state.close_modal();
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                state.close_modal();
+            }
+            _ => {
+                state.modal = Modal::ConfirmLogout;
+            }
+        },
+    }
 }
 
 fn navigate_sidebar(state: &mut AppState, delta: i32) {

@@ -39,4 +39,12 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     }
+
+    pub fn delete_token(&self) -> anyhow::Result<()> {
+        match std::fs::remove_file(&self.token_path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
 }

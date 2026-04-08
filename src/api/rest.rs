@@ -76,6 +76,20 @@ impl RestClient {
         api.data.ok_or_else(|| anyhow!("empty response"))
     }
 
+    async fn delete<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
+        let resp = self
+            .client
+            .delete(format!("{}{}", self.base_url, path))
+            .header("Authorization", self.auth_header())
+            .send()
+            .await?;
+        let api: ApiResponse<T> = resp.json().await?;
+        if let Some(err) = api.error {
+            return Err(anyhow!("{}: {}", err.code, err.message));
+        }
+        api.data.ok_or_else(|| anyhow!("empty response"))
+    }
+
     pub async fn register(&self, username: &str, password: &str) -> Result<User> {
         self.post(
             "/auth/register",
@@ -108,10 +122,19 @@ impl RestClient {
         self.get("/api/channels").await
     }
 
-    pub async fn create_channel(&self, name: &str, description: &str) -> Result<Channel> {
+    pub async fn create_channel(
+        &self,
+        name: &str,
+        description: &str,
+        is_private: bool,
+    ) -> Result<Channel> {
         self.post(
             "/api/channels",
-            &serde_json::json!({"name": name, "description": description}),
+            &serde_json::json!({
+                "name": name,
+                "description": description,
+                "is_private": is_private,
+            }),
             true,
         )
         .await
@@ -124,6 +147,34 @@ impl RestClient {
             true,
         )
         .await
+    }
+
+    pub async fn leave_channel(&self, channel_id: i64) -> Result<Value> {
+        self.post(
+            &format!("/api/channels/{}/leave", channel_id),
+            &serde_json::json!({}),
+            true,
+        )
+        .await
+    }
+
+    pub async fn list_members(&self, channel_id: i64) -> Result<Vec<ChannelMember>> {
+        self.get(&format!("/api/channels/{}/members", channel_id))
+            .await
+    }
+
+    pub async fn add_member(&self, channel_id: i64, user_id: i64) -> Result<Value> {
+        self.post(
+            &format!("/api/channels/{}/members", channel_id),
+            &serde_json::json!({ "user_id": user_id }),
+            true,
+        )
+        .await
+    }
+
+    pub async fn remove_member(&self, channel_id: i64, user_id: i64) -> Result<Value> {
+        self.delete(&format!("/api/channels/{}/members/{}", channel_id, user_id))
+            .await
     }
 
     pub async fn get_channel_messages(
